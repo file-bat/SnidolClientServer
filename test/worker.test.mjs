@@ -457,6 +457,24 @@ test('addosso risponde solo con quello che si vede, e ignora gli UUID strani', a
   assert.deepEqual(dati, { [ALEX.id]: ['trail_flame'] });
 });
 
+// --- regole dei server ------------------------------------------------------
+
+test('le regole dei server si leggono senza accesso', async () => {
+  const { stato, dati } = await chiama('/regole');
+  assert.equal(stato, 200);
+  assert.ok(dati['hypixel.net'].freelook);
+  assert.ok(dati['hypixel.net'].toggle_sprint);
+});
+
+test('le regole hanno solo testi, come se li aspetta il client', async () => {
+  const { dati } = await chiama('/regole');
+  for (const [dominio, divieti] of Object.entries(dati)) {
+    assert.equal(dominio, dominio.toLowerCase(), 'dominio in minuscolo: ' + dominio);
+    assert.ok(!dominio.includes(':'), 'niente porta nel dominio: ' + dominio);
+    for (const motivo of Object.values(divieti)) assert.equal(typeof motivo, 'string');
+  }
+});
+
 test('una via che non esiste risponde 404', async () => {
   const gettone = await entra(ALEX);
   const { stato } = await chiama('/niente', { gettone });

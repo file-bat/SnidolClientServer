@@ -79,6 +79,15 @@ In cambio il client riceve un **gettone nostro**, firmato, che dura dodici ore.
 | `POST /compra` | si | `{cosmetico, chiave}` |
 | `POST /indossa` | si | `{cosmetico}` — secondo click lo toglie |
 | `GET /addosso?uuid=a,b,c` | no | Cosa indossano gli altri, per disegnarli |
+| `GET /regole` | no | I moduli che ogni server vieta, per dominio |
+
+### Le regole dei server
+
+Entrando in un server, la mod spegne i moduli che quel server non permette e scrive nel
+pannello perche'. La lista sta in due posti: dentro la mod (`RegoleServer.java`), che vale
+anche senza rete, e qui in `REGOLE`, che serve ad aggiungere un server o un divieto
+**senza pubblicare un client nuovo**: basta rimettere online il worker. Le due liste si
+sommano, quindi da qui si puo' vietare di piu' ma mai riaccendere un modulo vietato.
 
 ## Le tre cose che tengono in piedi il negozio
 

@@ -121,6 +121,26 @@ const SCATOLE_AL_GIORNO = 3;
 const SCATOLA_PROBABILITA = 0.03;
 const TETTO_GIORNALIERO = 300;
 
+// I moduli che un server non vuole, per dominio.
+//
+// Il client ne ha gia' una copia scritta dentro, che vale anche senza rete: questa serve
+// ad aggiungere in fretta. Se un server cambia idea, o se ne scopre uno nuovo con delle
+// regole, si scrive qui e vale per tutti al prossimo avvio del gioco, senza aspettare una
+// versione nuova del client. Il client somma le due liste: da qui si puo' vietare di piu',
+// mai di meno.
+//
+// Le chiavi sono gli id dei moduli, quelli che restituisce id() nella mod.
+const REGOLE = {
+  // https://support.hypixel.net/hc/en-us/articles/6472550754962
+  'hypixel.net': {
+    freelook: "la visuale libera non e' permessa",
+    toggle_sprint: "la corsa automatica non e' permessa",
+    target_hud: 'vita e distanza degli altri non sono permesse',
+    team_tracker: "la distanza degli altri non e' permessa",
+    totem_pops: 'i totem degli altri non sono permessi',
+  },
+};
+
 // Il battito arriva ogni minuto. Questi due sono il muro contro chi lo manda a raffica:
 // sotto i trenta secondi non si guadagna niente, e sopra i due minuti il tempo in piu'
 // non si conta - cosi' chi stacca la rete per un'ora non torna con un premio.
@@ -162,6 +182,14 @@ async function instrada(richiesta, env) {
   // certo il suo gettone. Non espone niente di privato: solo cosa indossa uno che ti sta
   // gia' camminando accanto
   if (via === '/addosso' && richiesta.method === 'GET') return addosso(url, env);
+
+  // Pubblica anche questa: le regole valgono per tutti, e servono gia' prima dell'accesso.
+  // Si possono tenere in cache un'ora, tanto il client le chiede una volta all'avvio
+  if (via === '/regole' && richiesta.method === 'GET') {
+    const risposta = json(REGOLE);
+    risposta.headers.set('cache-control', 'public, max-age=3600');
+    return risposta;
+  }
 
   // Da qui in giu' bisogna aver fatto l'accesso
   const chi = await autentica(richiesta, env);
