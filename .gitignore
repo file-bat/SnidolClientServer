@@ -1,0 +1,8 @@
+# Il segreto delle firme sta nel pannello di Cloudflare, mai qui.
+# Questi sono i posti dove finirebbe per sbaglio provando in locale
+.dev.vars
+.env
+.wrangler/
+node_modules/
+*.sqlite
+*.db
