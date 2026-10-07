@@ -80,6 +80,18 @@ In cambio il client riceve un **gettone nostro**, firmato, che dura dodici ore.
 | `POST /indossa` | si | `{cosmetico}` — secondo click lo toglie |
 | `GET /addosso?uuid=a,b,c` | no | Cosa indossano gli altri, per disegnarli |
 | `GET /regole` | no | I moduli che ogni server vieta, per dominio |
+| `GET /amici` | si | Amici (con online e server), richieste ricevute e inviate |
+| `POST /amici/chiedi` | si | `{nome}` — se l'altro aveva gia' chiesto, si e' subito amici |
+| `POST /amici/accetta` | si | `{uuid}` |
+| `POST /amici/rifiuta` | si | `{uuid}` — rifiuta una ricevuta o ritira una inviata |
+| `POST /amici/togli` | si | `{uuid}` — toglie l'amicizia a tutti e due |
+
+Il battito (`POST /gioca`) ora puo' dire anche dove si sta giocando: `{server}`. Gli amici
+lo vedono solo mentre si e' online. Un indirizzo fatto di numeri, `localhost` o IPv6 si
+mostra come "server privato", per non dare in giro l'IP di casa di nessuno.
+
+Per attivare gli amici sul database vero: incolla `schema-amici.sql` nella Console di D1,
+una volta sola.
 
 ### Le regole dei server
 

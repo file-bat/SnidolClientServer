@@ -457,6 +457,178 @@ test('addosso risponde solo con quello che si vede, e ignora gli UUID strani', a
   assert.deepEqual(dati, { [ALEX.id]: ['trail_flame'] });
 });
 
+// --- amici ------------------------------------------------------------------
+
+const NOTCH = { id: 'c'.repeat(32), nome: 'Notch' };
+
+async function chiedi(gettone, nome) {
+  return chiama('/amici/chiedi', { metodo: 'POST', gettone, corpo: { nome } });
+}
+
+async function amiciDi(gettone) {
+  return (await chiama('/amici', { gettone })).dati;
+}
+
+async function battito(gettone, server) {
+  return chiama('/gioca', { metodo: 'POST', gettone, corpo: server === undefined ? {} : { server } });
+}
+
+test('una richiesta arriva, e accettandola si diventa amici tutti e due', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+
+  const { dati: dopoRichiesta } = await chiedi(alex, 'steve');
+  assert.deepEqual(dopoRichiesta.inviate.map((a) => a.nome), ['Steve']);
+  assert.deepEqual((await amiciDi(steve)).ricevute.map((a) => a.nome), ['Alex']);
+
+  const { stato } = await chiama('/amici/accetta', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } });
+  assert.equal(stato, 200);
+
+  assert.deepEqual((await amiciDi(alex)).amici.map((a) => a.nome), ['Steve']);
+  assert.deepEqual((await amiciDi(steve)).amici.map((a) => a.nome), ['Alex']);
+  assert.deepEqual((await amiciDi(alex)).inviate, []);
+  assert.deepEqual((await amiciDi(steve)).ricevute, []);
+});
+
+test('se tutti e due si chiedono l\'amicizia, sono amici senza dover accettare', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  const { dati } = await chiedi(steve, 'Alex');
+  assert.equal(dati.amici_ora, 'Alex');
+  assert.deepEqual((await amiciDi(alex)).amici.map((a) => a.nome), ['Steve']);
+});
+
+test('non si diventa amici di qualcuno senza che accetti', async () => {
+  const alex = await entra(ALEX);
+  await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  assert.deepEqual((await amiciDi(alex)).amici, []);
+});
+
+test('non si accetta una richiesta che non esiste', async () => {
+  await entra(ALEX);
+  const steve = await entra(STEVE);
+  const { stato } = await chiama('/amici/accetta', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } });
+  assert.equal(stato, 404);
+  assert.deepEqual((await amiciDi(steve)).amici, []);
+});
+
+test('chi ha mandato la richiesta non puo\' accettarla da solo', async () => {
+  const alex = await entra(ALEX);
+  await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  const { stato } = await chiama('/amici/accetta', { metodo: 'POST', gettone: alex, corpo: { uuid: STEVE.id } });
+  assert.equal(stato, 404);
+});
+
+test('chiedere due volte non fa due richieste', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await Promise.all([chiedi(alex, 'Steve'), chiedi(alex, 'Steve')]);
+  assert.equal((await amiciDi(steve)).ricevute.length, 1);
+});
+
+test('accettare due volte insieme non rompe niente', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  const risposte = await Promise.all([
+    chiama('/amici/accetta', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } }),
+    chiama('/amici/accetta', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } }),
+  ]);
+  assert.deepEqual(risposte.map((r) => r.stato).sort(), [200, 404]);
+  const righe = env.DB.sql.prepare('SELECT COUNT(*) AS n FROM amici').get();
+  assert.equal(righe.n, 2);
+});
+
+test('non si aggiunge se stessi ne\' chi non e\' mai entrato', async () => {
+  const alex = await entra(ALEX);
+  assert.equal((await chiedi(alex, 'Alex')).stato, 400);
+  assert.equal((await chiedi(alex, 'Sconosciuto')).stato, 404);
+});
+
+test('rifiutare toglie la richiesta, e ritirarla anche', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await entra(NOTCH);
+
+  await chiedi(alex, 'Steve');
+  await chiama('/amici/rifiuta', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } });
+  assert.deepEqual((await amiciDi(steve)).ricevute, []);
+  assert.deepEqual((await amiciDi(alex)).inviate, []);
+
+  await chiedi(alex, 'Notch');
+  await chiama('/amici/rifiuta', { metodo: 'POST', gettone: alex, corpo: { uuid: NOTCH.id } });
+  assert.deepEqual((await amiciDi(alex)).inviate, []);
+});
+
+test('togliere un amico lo toglie a tutti e due', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  await chiedi(steve, 'Alex');
+  await chiama('/amici/togli', { metodo: 'POST', gettone: steve, corpo: { uuid: ALEX.id } });
+  assert.deepEqual((await amiciDi(alex)).amici, []);
+  assert.deepEqual((await amiciDi(steve)).amici, []);
+});
+
+test('gli amici vedono chi e\' online e su che server', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  await chiedi(steve, 'Alex');
+
+  assert.equal((await amiciDi(alex)).amici[0].online, false);
+
+  await battito(steve, 'MC.Hypixel.net:25565');
+  const [amico] = (await amiciDi(alex)).amici;
+  assert.equal(amico.online, true);
+  assert.equal(amico.dove, 'mc.hypixel.net');
+
+  // Dopo qualche minuto senza battiti si e' usciti, e il server non si vede piu'
+  adesso += 4 * 60 * 1000;
+  const [dopo] = (await amiciDi(alex)).amici;
+  assert.equal(dopo.online, false);
+  assert.equal(dopo.dove, null);
+});
+
+test('l\'indirizzo di casa di qualcuno non si mostra', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  await chiedi(steve, 'Alex');
+
+  for (const indirizzo of ['93.41.12.7:25565', 'localhost', '[2001:db8::1]:25565', '2001:db8::1']) {
+    await battito(steve, indirizzo);
+    assert.equal((await amiciDi(alex)).amici[0].dove, 'server privato', indirizzo);
+  }
+
+  await battito(steve, '<script>alert(1)</script>');
+  assert.equal((await amiciDi(alex)).amici[0].dove, null);
+
+  await battito(steve);
+  assert.equal((await amiciDi(alex)).amici[0].online, true);
+});
+
+test('chi non e\' amico non vede dove giochi', async () => {
+  const alex = await entra(ALEX);
+  const steve = await entra(STEVE);
+  await chiedi(alex, 'Steve');
+  await battito(steve, 'mc.hypixel.net');
+  const elenco = await amiciDi(alex);
+  assert.deepEqual(elenco.amici, []);
+  assert.equal(JSON.stringify(elenco).includes('hypixel'), false);
+});
+
+test('il battito continua a far guadagnare come prima', async () => {
+  const gettone = await entra(ALEX);
+  await battito(gettone, 'mc.hypixel.net');
+  adesso += 60 * 1000;
+  const { dati } = await battito(gettone, 'mc.hypixel.net');
+  assert.equal(dati.gemme, 502);
+});
+
 // --- regole dei server ------------------------------------------------------
 
 test('le regole dei server si leggono senza accesso', async () => {

@@ -147,6 +147,18 @@ const REGOLE = {
 const INTERVALLO_MINIMO = 30 * 1000;
 const MASSIMO_PER_BATTITO = 120 * 1000;
 
+// Gli amici.
+//
+// Un tetto alle amicizie e alle richieste in sospeso: non per avarizia, ma perche' senza
+// uno script potrebbe chiedere l'amicizia a tutti quelli che sono mai entrati, e ognuno
+// si ritroverebbe la lista piena di richieste di uno sconosciuto.
+const AMICI_MASSIMI = 200;
+const RICHIESTE_MASSIME = 50;
+
+// Online vuol dire "ha mandato un battito da poco". Il battito e' ogni minuto: tre minuti
+// lasciano passare un battito perso per strada senza farti sembrare uscito
+const ONLINE_ENTRO = 3 * 60 * 1000;
+
 // Quanto vale un gettone di accesso. Corto apposta: se qualcuno se ne procura uno,
 // smette di funzionare da solo entro sera invece di valere per sempre.
 const DURATA_GETTONE = 12 * 60 * 60 * 1000;
@@ -196,13 +208,19 @@ async function instrada(richiesta, env) {
   if (!chi) return json({ errore: 'non autenticato' }, 401);
 
   if (via === '/io' && richiesta.method === 'GET') return json(await stato(env, chi));
-  if (via === '/gioca' && richiesta.method === 'POST') return gioca(env, chi);
+  if (via === '/gioca' && richiesta.method === 'POST') return gioca(richiesta, env, chi);
   if (via === '/compra' && richiesta.method === 'POST') return compra(richiesta, env, chi);
   if (via === '/indossa' && richiesta.method === 'POST') return indossa(richiesta, env, chi);
   if (via === '/codice' && richiesta.method === 'POST') return codice(richiesta, env, chi);
   if (via === '/regala' && richiesta.method === 'POST') return regala(richiesta, env, chi);
   if (via === '/scatola/compra' && richiesta.method === 'POST') return compraScatola(richiesta, env, chi);
   if (via === '/scatola/apri' && richiesta.method === 'POST') return apriScatola(richiesta, env, chi);
+
+  if (via === '/amici' && richiesta.method === 'GET') return json(await elencoAmici(env, chi));
+  if (via === '/amici/chiedi' && richiesta.method === 'POST') return chiediAmicizia(richiesta, env, chi);
+  if (via === '/amici/accetta' && richiesta.method === 'POST') return accettaAmicizia(richiesta, env, chi);
+  if (via === '/amici/rifiuta' && richiesta.method === 'POST') return rifiutaAmicizia(richiesta, env, chi);
+  if (via === '/amici/togli' && richiesta.method === 'POST') return togliAmico(richiesta, env, chi);
 
   return json({ errore: 'non esiste' }, 404);
 }
@@ -391,13 +409,20 @@ async function stato(env, chi) {
 // giornaliero a limitarlo, e sta li' per questo - non per essere avaro.
 // ---------------------------------------------------------------------------
 
-async function gioca(env, chi) {
+async function gioca(richiesta, env, chi) {
+  const corpo = await leggi(richiesta);
   const adesso = Date.now();
   const giocatore = await env.DB
     .prepare('SELECT gemme, visto, giorno, guadagnate, scatole_oggi FROM giocatori WHERE uuid = ?')
     .bind(chi.uuid).first();
 
   if (!giocatore) return json({ errore: 'giocatore sconosciuto' }, 404);
+
+  // La presenza si scrive a ogni battito, anche a quelli troppo ravvicinati per far
+  // guadagnare qualcosa: gli amici devono vederti online, e dove, comunque vada il resto.
+  // Un client vecchio non manda "server", e risulta online senza dire dove
+  await env.DB.prepare('UPDATE giocatori SET presente = ?, dove = ? WHERE uuid = ?')
+    .bind(adesso, doveDi(corpo.server), chi.uuid).run();
 
   // Primo battito: si segna l'ora e basta. Senza, il tempo passato dalla creazione
   // dell'account verrebbe contato come tempo di gioco
@@ -904,6 +929,183 @@ async function addosso(url, env) {
     (risposta[riga.uuid] = risposta[riga.uuid] || []).push(riga.cosmetico);
   }
   return json(risposta);
+}
+
+// ---------------------------------------------------------------------------
+// Gli amici
+//
+// Le regole sono poche e tutte qui:
+//   - l'amicizia vale solo se l'hanno voluta tutti e due: uno chiede, l'altro accetta
+//   - se A chiede a B mentre B aveva gia' chiesto ad A, non si aspetta niente: sono amici
+//   - si cerca per nome, ma si salva l'UUID: chi cambia nome resta amico di chi aveva
+//   - dove gioca un amico lo vedono solo gli amici, e solo mentre e' online
+// ---------------------------------------------------------------------------
+
+async function elencoAmici(env, chi) {
+  const adesso = Date.now();
+
+  const amici = await env.DB.prepare(
+    'SELECT g.uuid, g.nome, g.presente, g.dove FROM amici a'
+    + ' JOIN giocatori g ON g.uuid = a.amico'
+    + ' WHERE a.uuid = ? ORDER BY g.nome COLLATE NOCASE'
+  ).bind(chi.uuid).all();
+
+  const ricevute = await env.DB.prepare(
+    'SELECT g.uuid, g.nome FROM richieste r JOIN giocatori g ON g.uuid = r.da'
+    + ' WHERE r.a = ? ORDER BY r.quando DESC'
+  ).bind(chi.uuid).all();
+
+  const inviate = await env.DB.prepare(
+    'SELECT g.uuid, g.nome FROM richieste r JOIN giocatori g ON g.uuid = r.a'
+    + ' WHERE r.da = ? ORDER BY r.quando DESC'
+  ).bind(chi.uuid).all();
+
+  return {
+    amici: (amici.results || []).map((r) => {
+      const online = r.presente > adesso - ONLINE_ENTRO;
+      return { uuid: r.uuid, nome: r.nome, online: online, dove: online ? r.dove : null };
+    }),
+    ricevute: (ricevute.results || []).map((r) => ({ uuid: r.uuid, nome: r.nome })),
+    inviate: (inviate.results || []).map((r) => ({ uuid: r.uuid, nome: r.nome })),
+  };
+}
+
+async function chiediAmicizia(richiesta, env, chi) {
+  const corpo = await leggi(richiesta);
+  const nome = String(corpo.nome || '').trim();
+  if (!nome || nome.length > 16) return json({ errore: 'nome non valido' }, 400);
+
+  // Come per i regali: solo chi e' gia' entrato almeno una volta nel client. Gli altri
+  // non riceverebbero mai la richiesta, e resterebbe li' a occupare un posto
+  const altro = await env.DB
+    .prepare('SELECT uuid, nome FROM giocatori WHERE nome = ? COLLATE NOCASE')
+    .bind(nome).first();
+
+  if (!altro) return json({ errore: 'giocatore mai entrato nel client' }, 404);
+  if (altro.uuid === chi.uuid) return json({ errore: 'non puoi aggiungere te stesso' }, 400);
+
+  const gia = await env.DB.prepare('SELECT 1 AS c FROM amici WHERE uuid = ? AND amico = ?')
+    .bind(chi.uuid, altro.uuid).first();
+  if (gia) return json(Object.assign({ gia: true }, await elencoAmici(env, chi)));
+
+  // L'altro aveva gia' chiesto a noi: si diventa amici subito
+  const suaRichiesta = await env.DB.prepare('SELECT 1 AS c FROM richieste WHERE da = ? AND a = ?')
+    .bind(altro.uuid, chi.uuid).first();
+  if (suaRichiesta) {
+    const fatto = await diventaAmici(env, chi.uuid, altro.uuid);
+    if (fatto) return fatto;
+    return json(Object.assign({ amici_ora: altro.nome }, await elencoAmici(env, chi)));
+  }
+
+  const inSospeso = await env.DB.prepare('SELECT COUNT(*) AS n FROM richieste WHERE da = ?')
+    .bind(chi.uuid).first();
+  if (inSospeso && inSospeso.n >= RICHIESTE_MASSIME) {
+    return json({ errore: 'troppe richieste in attesa' }, 400);
+  }
+
+  // OR IGNORE: chiedere due volte alla stessa persona non e' un errore, e' un doppio click
+  await env.DB.prepare('INSERT OR IGNORE INTO richieste (da, a, quando) VALUES (?, ?, ?)')
+    .bind(chi.uuid, altro.uuid, Date.now()).run();
+
+  return json(Object.assign({ chiesta: altro.nome }, await elencoAmici(env, chi)));
+}
+
+async function accettaAmicizia(richiesta, env, chi) {
+  const corpo = await leggi(richiesta);
+  const uuid = uuidValido(corpo.uuid);
+  if (!uuid) return json({ errore: 'uuid non valido' }, 400);
+
+  // Si consuma la richiesta prima di fare amicizia, e in un colpo solo: se non c'era -
+  // o qualcuno l'ha gia' consumata con un altro click - non si va avanti
+  const presa = await env.DB.prepare('DELETE FROM richieste WHERE da = ? AND a = ?')
+    .bind(uuid, chi.uuid).run();
+  if (!presa.meta || presa.meta.changes !== 1) {
+    return json(Object.assign({ errore: 'nessuna richiesta da accettare' },
+      await elencoAmici(env, chi)), 404);
+  }
+
+  const fatto = await diventaAmici(env, chi.uuid, uuid);
+  if (fatto) {
+    // Pieno: la richiesta torna dov'era, cosi' la si puo' accettare dopo aver fatto posto
+    await env.DB.prepare('INSERT OR IGNORE INTO richieste (da, a, quando) VALUES (?, ?, ?)')
+      .bind(uuid, chi.uuid, Date.now()).run();
+    return fatto;
+  }
+  return json(await elencoAmici(env, chi));
+}
+
+// Rifiuta una richiesta ricevuta, o ritira una richiesta mandata: per chi la guarda e'
+// la stessa cosa, una richiesta che sparisce dalla lista
+async function rifiutaAmicizia(richiesta, env, chi) {
+  const corpo = await leggi(richiesta);
+  const uuid = uuidValido(corpo.uuid);
+  if (!uuid) return json({ errore: 'uuid non valido' }, 400);
+
+  await env.DB.prepare(
+    'DELETE FROM richieste WHERE (da = ?1 AND a = ?2) OR (da = ?2 AND a = ?1)'
+  ).bind(uuid, chi.uuid).run();
+
+  return json(await elencoAmici(env, chi));
+}
+
+async function togliAmico(richiesta, env, chi) {
+  const corpo = await leggi(richiesta);
+  const uuid = uuidValido(corpo.uuid);
+  if (!uuid) return json({ errore: 'uuid non valido' }, 400);
+
+  // Tutte e due le righe insieme: un'amicizia a meta' vorrebbe dire che uno vede ancora
+  // dove gioca l'altro, che invece l'ha tolto
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM amici WHERE uuid = ? AND amico = ?').bind(chi.uuid, uuid),
+    env.DB.prepare('DELETE FROM amici WHERE uuid = ? AND amico = ?').bind(uuid, chi.uuid),
+  ]);
+
+  return json(await elencoAmici(env, chi));
+}
+
+// Scrive l'amicizia, le due righe insieme. Restituisce una risposta d'errore se chi la
+// chiede ha gia' la lista piena, altrimenti null
+async function diventaAmici(env, io, altro) {
+  const quanti = await env.DB.prepare('SELECT COUNT(*) AS n FROM amici WHERE uuid = ?')
+    .bind(io).first();
+  if (quanti && quanti.n >= AMICI_MASSIMI) {
+    return json({ errore: 'hai gia\' troppi amici' }, 400);
+  }
+
+  const adesso = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR IGNORE INTO amici (uuid, amico, dal) VALUES (?, ?, ?)')
+      .bind(io, altro, adesso),
+    env.DB.prepare('INSERT OR IGNORE INTO amici (uuid, amico, dal) VALUES (?, ?, ?)')
+      .bind(altro, io, adesso),
+    // Se c'erano richieste in giro fra i due, in un verso o nell'altro, non servono piu'
+    env.DB.prepare('DELETE FROM richieste WHERE (da = ?1 AND a = ?2) OR (da = ?2 AND a = ?1)')
+      .bind(io, altro),
+  ]);
+  return null;
+}
+
+// Dove si sta giocando, come lo vedranno gli amici.
+//
+// Arriva dal client, quindi si ripulisce: solo lettere, numeri, punti e trattini, senza
+// porta. Un indirizzo fatto di soli numeri e' quasi sempre il server di casa di qualcuno,
+// e mostrarlo vorrebbe dire dare in giro l'IP di casa sua: diventa "server privato"
+function doveDi(valore) {
+  if (typeof valore !== 'string') return null;
+  let host = valore.trim().toLowerCase();
+  if (!host || host.startsWith('[') || (host.match(/:/g) || []).length > 1) {
+    return host ? 'server privato' : null;
+  }
+  host = host.split(':')[0].replace(/\.+$/, '');
+  if (host === 'localhost') return 'server privato';
+  if (/^[0-9.]+$/.test(host)) return 'server privato';
+  if (!/^[a-z0-9.-]{1,64}$/.test(host)) return null;
+  return host;
+}
+
+function uuidValido(valore) {
+  const uuid = String(valore || '').toLowerCase().replace(/-/g, '');
+  return /^[0-9a-f]{32}$/.test(uuid) ? uuid : null;
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 
-const SCHEMI = ['schema.sql', 'schema-codici.sql', 'schema-scatole.sql'];
+const SCHEMI = ['schema.sql', 'schema-codici.sql', 'schema-scatole.sql', 'schema-amici.sql'];
 
 export function nuovoDatabase() {
   const db = new DatabaseSync(':memory:');
@@ -20,17 +20,34 @@ export function nuovoDatabase() {
     prepare(testo) {
       return istruzione(db, testo, []);
     },
+    // Come in D1: tutte o nessuna. Senza await fra un'istruzione e l'altra, cosi' nessuna
+    // altra richiesta puo' infilarsi in mezzo, proprio come nella transazione vera
+    async batch(istruzioni) {
+      db.exec('BEGIN');
+      try {
+        const esiti = istruzioni.map((i) => i.esegui());
+        db.exec('COMMIT');
+        return esiti;
+      } catch (rotto) {
+        db.exec('ROLLBACK');
+        throw rotto;
+      }
+    },
   };
 }
 
 function istruzione(db, testo, valori) {
+  const esegui = () => {
+    const esito = db.prepare(testo).run(...valori);
+    return { success: true, meta: { changes: Number(esito.changes) } };
+  };
   return {
+    esegui,
     bind(...nuovi) {
       return istruzione(db, testo, nuovi);
     },
     async run() {
-      const esito = db.prepare(testo).run(...valori);
-      return { success: true, meta: { changes: Number(esito.changes) } };
+      return esegui();
     },
     async first() {
       return db.prepare(testo).get(...valori) ?? null;
