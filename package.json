@@ -1,0 +1,12 @@
+{
+  "name": "snidol-gemme",
+  "private": true,
+  "type": "module",
+  "description": "Il server delle gemme e dei cosmetici di SnidolClient",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

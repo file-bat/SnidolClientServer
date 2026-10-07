@@ -51,7 +51,7 @@ const CATALOGO = {
 // giorni e non c'e' piu' niente da guardare.
 const GEMME_AL_MINUTO = 2;
 
-// Quanto si trova in tasca al primo accesso: una scia costa 400, quindi si entra gia'
+// Quanto si trova in tasca al primo accesso: una scia comune costa 300, quindi si entra gia'
 // potendo comprare qualcosa invece di guardare un negozio tutto spento
 const GEMME_DI_BENVENUTO = 500;
 

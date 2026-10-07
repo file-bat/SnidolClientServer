@@ -38,6 +38,19 @@ collegate** prima di doverci pensare.
 
    Deve rispondere `{"ok":true}`.
 
+## I test
+
+    node --test
+
+Girano sul `worker.js` vero e su un database SQLite vero (quello che Node 22.5+ ha gia'
+dentro, quindi non c'e' niente da installare). L'unica cosa finta e' Mojang, e l'orologio,
+che i test spostano a mano invece di aspettare.
+
+Le prove che contano di piu' sono quelle sulle richieste che arrivano **insieme**: due
+acquisti, due battiti, due regali, due aperture della stessa scatola nello stesso istante.
+E' li' che un negozio si buca, ed e' l'unico modo di provarlo davvero. Su GitHub partono
+da soli a ogni modifica.
+
 ## Come si entra, senza far girare la password
 
 Il gettone di sessione di Minecraft **non passa mai da questo server**. Il giro e' lo
